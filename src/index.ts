@@ -39,6 +39,7 @@ interface Config {
   cooldownMs: number;
   resendApiKey: string;
   emailTo: string;
+  projectId?: string;
 }
 
 function die(message: string): never {
@@ -89,6 +90,9 @@ function loadConfig(): Config {
   ).trim();
   if (!locationPrefix) die("LOCATION_PREFIX must not be empty");
 
+  const projectIdRaw = process.env.HETZNER_PROJECT_ID?.trim();
+  const projectId = projectIdRaw ? projectIdRaw : undefined;
+
   return {
     token,
     serverTypeId,
@@ -97,7 +101,14 @@ function loadConfig(): Config {
     cooldownMs: cooldownSeconds * 1000,
     resendApiKey,
     emailTo,
+    projectId,
   };
+}
+
+function buyNowUrl(projectId: string | undefined): string {
+  return projectId
+    ? `https://console.hetzner.cloud/projects/${encodeURIComponent(projectId)}/servers/create`
+    : "https://console.hetzner.cloud/projects";
 }
 
 async function fetchServerTypeName(
@@ -114,7 +125,7 @@ async function fetchServerTypeName(
     );
   }
   const data = (await res.json()) as { server_type: { name: string } };
-  return data.server_type.name;
+  return data.server_type.name.toUpperCase();
 }
 
 async function fetchLocationLabel(
@@ -175,15 +186,25 @@ async function sendAlert(
   matches: string[],
 ): Promise<boolean> {
   const ts = timestamp();
+  const buyUrl = buyNowUrl(cfg.projectId);
   const subject = `Hetzner: server ${serverTypeName} available in ${locationLabel}`;
   const text = [
-    `Server name ${serverTypeName} is currently AVAILABLE in ${locationLabel} datacenters:`,
+    `Server ${serverTypeName} is currently AVAILABLE in ${locationLabel} datacenters:`,
     "",
     ...matches.map((name) => `  - ${name}`),
     "",
     `Checked at ${ts} UTC.`,
     "",
-    "Buy now: https://console.hetzner.cloud/projects",
+    `Buy now: ${buyUrl}`,
+  ].join("\n");
+
+  const html = [
+    `<p>Server <strong>${serverTypeName}</strong> is currently AVAILABLE in <strong>${locationLabel}</strong> datacenters:</p>`,
+    "<ul>",
+    ...matches.map((name) => `  <li>${name}</li>`),
+    "</ul>",
+    `<p>Checked at ${ts} UTC.</p>`,
+    `<p>Buy now: <a href="${buyUrl}">${buyUrl}</a></p>`,
   ].join("\n");
 
   const { error } = await resend.emails.send({
@@ -191,6 +212,7 @@ async function sendAlert(
     to: cfg.emailTo,
     subject,
     text,
+    html,
   });
   if (error) {
     console.error(`[${timestamp()}] email send failed:`, error);
@@ -210,12 +232,19 @@ async function main(): Promise<void> {
 
   console.log("hetzner-server-radar starting with config:");
   console.log(`  HCLOUD_TOKEN          ${maskToken(cfg.token)}`);
-  console.log(`  SERVER_TYPE_ID        ${cfg.serverTypeId} (${serverTypeName})`);
-  console.log(`  LOCATION_PREFIX       ${cfg.locationPrefix} (${locationLabel})`);
+  console.log(
+    `  SERVER_TYPE_ID        ${cfg.serverTypeId} (${serverTypeName})`,
+  );
+  console.log(
+    `  LOCATION_PREFIX       ${cfg.locationPrefix} (${locationLabel})`,
+  );
   console.log(`  CHECK_INTERVAL_SECONDS ${cfg.intervalMs / 1000}`);
   console.log(`  EMAIL_COOLDOWN_SECONDS ${cfg.cooldownMs / 1000}`);
   console.log(`  ALERT_EMAIL_TO        ${cfg.emailTo}`);
   console.log(`  ALERT_EMAIL_FROM      ${EMAIL_FROM}`);
+  console.log(
+    `  HETZNER_PROJECT_ID    ${cfg.projectId ?? "(unset — Buy now links to project list)"}`,
+  );
 
   let inFlight = false;
   let lastAlertAt = 0;
