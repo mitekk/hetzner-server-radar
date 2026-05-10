@@ -24,6 +24,7 @@ npm start
 | `SERVER_TYPE_ID`         | no       | `115` (CX33)       | Hetzner server type id                        |
 | `LOCATION_PREFIX`        | no       | `nbg1` (Nuremberg) | matches `dc.name.startsWith(...)`             |
 | `CHECK_INTERVAL_SECONDS` | no       | `300`              | poll cadence                                  |
+| `HETZNER_PROJECT_ID`     | no       | —                  | when set, the "Buy now" link in alert emails deep-links to that project's create-server page instead of the project list. Find it in the console URL: `https://console.hetzner.cloud/projects/<id>/...` |
 
 ### `LOCATION_PREFIX` options
 
