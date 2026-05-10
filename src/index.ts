@@ -2,6 +2,8 @@ import "dotenv/config";
 import { Resend } from "resend";
 
 const API = "https://api.hetzner.cloud/v1/datacenters";
+const SERVER_TYPES_API = "https://api.hetzner.cloud/v1/server_types";
+const LOCATIONS_API = "https://api.hetzner.cloud/v1/locations";
 const EMAIL_FROM = "hetzner.radar@resend.dev";
 
 const DEFAULTS = {
@@ -98,6 +100,50 @@ function loadConfig(): Config {
   };
 }
 
+async function fetchServerTypeName(
+  token: string,
+  serverTypeId: number,
+): Promise<string> {
+  const res = await fetch(`${SERVER_TYPES_API}/${serverTypeId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `Hetzner API HTTP ${res.status} fetching server type ${serverTypeId}: ${body.slice(0, 200)}`,
+    );
+  }
+  const data = (await res.json()) as { server_type: { name: string } };
+  return data.server_type.name;
+}
+
+async function fetchLocationLabel(
+  token: string,
+  locationPrefix: string,
+): Promise<string> {
+  const res = await fetch(LOCATIONS_API, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `Hetzner API HTTP ${res.status} fetching locations: ${body.slice(0, 200)}`,
+    );
+  }
+  const data = (await res.json()) as {
+    locations: { name: string; city: string }[];
+  };
+  const cities = Array.from(
+    new Set(
+      data.locations
+        .filter((l) => l.name.startsWith(locationPrefix))
+        .map((l) => l.city),
+    ),
+  );
+  if (cities.length === 0) return locationPrefix;
+  return cities.join(", ");
+}
+
 async function findAvailableDatacenters(
   token: string,
   serverTypeId: number,
@@ -124,12 +170,14 @@ function timestamp(): string {
 async function sendAlert(
   resend: Resend,
   cfg: Config,
+  serverTypeName: string,
+  locationLabel: string,
   matches: string[],
 ): Promise<boolean> {
   const ts = timestamp();
-  const subject = `Hetzner: server type ${cfg.serverTypeId} available in ${cfg.locationPrefix}`;
+  const subject = `Hetzner: server ${serverTypeName} available in ${locationLabel}`;
   const text = [
-    `Server type id ${cfg.serverTypeId} is currently AVAILABLE in ${cfg.locationPrefix} datacenters:`,
+    `Server name ${serverTypeName} is currently AVAILABLE in ${locationLabel} datacenters:`,
     "",
     ...matches.map((name) => `  - ${name}`),
     "",
@@ -155,11 +203,15 @@ async function sendAlert(
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const resend = new Resend(cfg.resendApiKey);
+  const [serverTypeName, locationLabel] = await Promise.all([
+    fetchServerTypeName(cfg.token, cfg.serverTypeId),
+    fetchLocationLabel(cfg.token, cfg.locationPrefix),
+  ]);
 
   console.log("hetzner-server-radar starting with config:");
   console.log(`  HCLOUD_TOKEN          ${maskToken(cfg.token)}`);
-  console.log(`  SERVER_TYPE_ID        ${cfg.serverTypeId}`);
-  console.log(`  LOCATION_PREFIX       ${cfg.locationPrefix}`);
+  console.log(`  SERVER_TYPE_ID        ${cfg.serverTypeId} (${serverTypeName})`);
+  console.log(`  LOCATION_PREFIX       ${cfg.locationPrefix} (${locationLabel})`);
   console.log(`  CHECK_INTERVAL_SECONDS ${cfg.intervalMs / 1000}`);
   console.log(`  EMAIL_COOLDOWN_SECONDS ${cfg.cooldownMs / 1000}`);
   console.log(`  ALERT_EMAIL_TO        ${cfg.emailTo}`);
@@ -185,7 +237,13 @@ async function main(): Promise<void> {
         if (!wasAvailableLast) {
           const sinceLast = Date.now() - lastAlertAt;
           if (lastAlertAt === 0 || sinceLast >= cfg.cooldownMs) {
-            const sent = await sendAlert(resend, cfg, matches);
+            const sent = await sendAlert(
+              resend,
+              cfg,
+              serverTypeName,
+              locationLabel,
+              matches,
+            );
             if (sent) lastAlertAt = Date.now();
           } else {
             const agoSec = Math.floor(sinceLast / 1000);
